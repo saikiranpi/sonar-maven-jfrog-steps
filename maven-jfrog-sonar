@@ -1,0 +1,201 @@
+# Installing SonarQube with Separate PostgreSQL Instance
+> Guide for installing SonarQube on a server that already has PostgreSQL running for other services (like JFrog)
+
+## Table of Contents
+- [Prerequisites](#prerequisites)
+- [Setting up PostgreSQL Instance](#setting-up-postgresql-instance)
+- [Configuring PostgreSQL](#configuring-postgresql)
+- [Setting up SonarQube](#setting-up-sonarqube)
+- [System Configuration](#system-configuration)
+
+## Prerequisites
+- Ubuntu/Debian server
+- Root or sudo access
+- Existing PostgreSQL installation (e.g., for JFrog)
+
+## Setting up PostgreSQL Instance
+
+Create and initialize a new PostgreSQL directory:
+```bash
+# Create directory
+sudo mkdir -p /var/lib/postgresql/sonarqube
+sudo chown postgres:postgres /var/lib/postgresql/sonarqube
+
+# Initialize database
+sudo su - postgres
+/usr/lib/postgresql/15/bin/initdb -D /var/lib/postgresql/sonarqube
+```
+
+## Configuring PostgreSQL
+
+1. Configure PostgreSQL settings:
+```bash
+sudo nano /var/lib/postgresql/sonarqube/postgresql.conf
+```
+Add:
+```ini
+listen_addresses = 'localhost'
+port = 5433
+unix_socket_directories = '/var/run/postgresql'
+```
+
+2. Configure access permissions:
+```bash
+sudo nano /var/lib/postgresql/sonarqube/pg_hba.conf
+```
+Add:
+```
+local   all             postgres                                trust
+local   all             all                                     md5
+host    all             all             127.0.0.1/32            md5
+host    all             all             ::1/128                 md5
+```
+
+3. Create PostgreSQL service:
+```bash
+sudo nano /etc/systemd/system/postgresql-sonarqube.service
+```
+Add:
+```ini
+[Unit]
+Description=PostgreSQL for SonarQube
+After=network.target
+
+[Service]
+Type=forking
+User=postgres
+Group=postgres
+ExecStart=/usr/lib/postgresql/15/bin/pg_ctl -D /var/lib/postgresql/sonarqube -l /var/log/postgresql/postgresql-sonarqube.log start
+ExecStop=/usr/lib/postgresql/15/bin/pg_ctl -D /var/lib/postgresql/sonarqube stop
+TimeoutSec=300
+
+[Install]
+WantedBy=multi-user.target
+```
+
+4. Start PostgreSQL service:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl start postgresql-sonarqube
+sudo systemctl enable postgresql-sonarqube
+
+# Verify installation
+sudo systemctl status postgresql-sonarqube
+sudo netstat -plunt | grep 5433
+```
+
+5. Create database and user:
+```bash
+psql -p 5433 -U postgres
+
+CREATE USER sonar WITH ENCRYPTED PASSWORD 'my_strong_password';
+CREATE DATABASE sonarqube OWNER sonar;
+GRANT ALL PRIVILEGES ON DATABASE sonarqube to sonar;
+\q
+```
+
+## Setting up SonarQube
+
+1. Install dependencies and SonarQube:
+```bash
+# Install dependencies
+sudo apt-get install zip -y
+
+# Download and extract SonarQube
+cd /opt
+sudo wget https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-9.7.1.62043.zip
+sudo unzip sonarqube-9.7.1.62043.zip
+sudo mv sonarqube-9.7.1.62043 sonarqube
+rm -rf sonarqube-9.7.1.62043.zip
+```
+
+2. Create user and set permissions:
+```bash
+sudo groupadd sonar
+sudo useradd -d /opt/sonarqube -g sonar sonar
+sudo chown sonar:sonar /opt/sonarqube -R
+```
+
+3. Configure SonarQube:
+```bash
+sudo nano /opt/sonarqube/conf/sonar.properties
+```
+Add:
+```properties
+sonar.jdbc.username=sonar
+sonar.jdbc.password=my_strong_password
+sonar.jdbc.url=jdbc:postgresql://localhost:5433/sonarqube
+```
+
+## System Configuration
+
+1. Create SonarQube service:
+```bash
+sudo nano /etc/systemd/system/sonar.service
+```
+Add:
+```ini
+[Unit]
+Description=SonarQube service
+After=syslog.target network.target
+
+[Service]
+Type=forking
+ExecStart=/opt/sonarqube/bin/linux-x86-64/sonar.sh start
+ExecStop=/opt/sonarqube/bin/linux-x86-64/sonar.sh stop
+User=sonar
+Group=sonar
+Restart=always
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target
+```
+
+2. Configure system limits:
+```bash
+# Configure sysctl
+sudo nano /etc/sysctl.conf
+```
+Add:
+```
+vm.max_map_count=262144
+fs.file-max=65536
+```
+
+3. Configure user limits:
+```bash
+sudo nano /etc/security/limits.conf
+```
+Add:
+```
+sonar   soft    nofile  65536
+sonar   hard    nofile  65536
+sonar   soft    nproc   4096
+sonar   hard    nproc   4096
+```
+
+4. Start SonarQube:
+```bash
+sudo sysctl -p
+sudo systemctl daemon-reload
+sudo systemctl start sonar
+sudo systemctl enable sonar
+
+# Check status
+sudo systemctl status sonar
+```
+
+## Accessing SonarQube
+- Wait 5 minutes for SonarQube to start
+- Access: `http://your-server:9000`
+- Default credentials: 
+  - Username: `admin`
+  - Password: `admin`
+- Change password when prompted
+
+## Notes
+- This setup uses port 5433 to avoid conflicts with existing PostgreSQL instances
+- Adjust memory limits based on your server specifications
+- Check logs at `/opt/sonarqube/logs/` if you encounter issues
